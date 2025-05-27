@@ -1,12 +1,14 @@
 import os
 from PIL import Image
 import torch
+import time
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torch import cuda
 from torch.amp import autocast, GradScaler
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 import torch.multiprocessing as mp
 import concurrent.futures
 import timm
@@ -27,22 +29,25 @@ class TransformWrapper(torch.utils.data.Dataset):
         def __len__(self):
             return len(self.dataset)
 
-class SwinTransformerModel(nn.Module):
+class SwinV2Model(nn.Module):
     def __init__(self, num_classes):
-        super(SwinTransformerModel, self).__init__()
-        self.model = timm.create_model('swin_large_patch4_window12_384', pretrained=True)
-        in_features = self.model.head.in_features
-        self.model.head = nn.Linear(in_features, num_classes)
-        
-        # Freezing of all layers except final        
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        for param in self.model.head.parameters():
-            param.requires_grad = True
-        
+        super(SwinV2Model, self).__init__()
+        self.processor = AutoImageProcessor.from_pretrained("microsoft/swinv2-tiny-patch4-window16-256")
+        self.model = AutoModelForImageClassification.from_pretrained(
+            "microsoft/swinv2-tiny-patch4-window16-256",
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True  # Needed if changing head size
+        )
+        for name, param in self.model.named_parameters():
+            if "classifier" not in name:
+                param.requires_grad = False
+
     def forward(self, x):
-        return self.model(x)
+        # x is a batch of images in [B, C, H, W]
+        # Convert to expected input format
+        inputs = self.processor(images=[transforms.ToPILImage()(img.cpu()) for img in x], return_tensors="pt", padding=True)
+        inputs = {k: v.to(x.device) for k, v in inputs.items()}
+        return self.model(**inputs).logits
     
 def custom_loader(path):
     # Open the image
@@ -53,20 +58,16 @@ def custom_loader(path):
 
 
 train_transform = transforms.Compose([
-    transforms.RandomRotation(40),  # Random rotation within a range of 40 degrees
-    transforms.RandomHorizontalFlip(),  # Random horizontal flip
-    transforms.Resize((384, 384)),  # Resize the image to 384x384
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),  # Random color jitter
-    transforms.RandomAffine(degrees=20, translate=(0.1, 0.1)),  # Random affine transformations
-    transforms.RandomResizedCrop(384, scale=(0.8, 1.0)),  # Random zoom (rescaling) between 80%-100% of the original size
-    transforms.ToTensor(),  # Convert image to tensor
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize image with standard mean and std
+    transforms.RandomRotation(40),
+    transforms.RandomHorizontalFlip(),
+    transforms.Resize((256, 256)),
+    transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
+    transforms.ToTensor()
 ])
 
 test_transform = transforms.Compose([
-    transforms.Resize((384, 384)),
+    transforms.Resize((256, 256)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 device = torch.device(device)
@@ -96,7 +97,7 @@ def load_checkpoint(model, optimizer, checkpoint_path):
 # Main training script
 if __name__ == "__main__":
     
-    log_file = "training_log.csv"
+    log_file = "SWINv2_BF_log.csv"
     with open(log_file, mode = "w", newline = '')as f:
         writer = csv.writer(f)
         writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc'])
@@ -122,7 +123,7 @@ if __name__ == "__main__":
     # Initialize the model, loss function, and optimizer
     num_classes = 2 # Number of output classes based on dataset
     print(f"We have {num_classes} classes")
-    model = SwinTransformerModel(num_classes).to(device)  # Initialize the Swin Transformer model
+    model = SwinV2Model(num_classes).to(device)  # Initialize the Swin Transformer model
     
     if torch.cuda.device_count() > 1:
         print(f"✅ Using {torch.cuda.device_count()} GPUs via DataParallel")
@@ -168,6 +169,7 @@ if __name__ == "__main__":
     epochs = 20
 
     # Start training loop with ThreadPoolExecutor to parallelize certain tasks
+    start_time = time.time()
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for epoch in range(start_epoch, epochs):  # Start from the last saved epoch
 
@@ -188,10 +190,9 @@ if __name__ == "__main__":
 
                 # Use mixed precision to accelerate computation and reduce memory usage
                 with autocast(device_type='cuda', dtype=torch.float16):
-                    outputs = model(inputs)  # Forward pass through the model
-                    outputs = outputs.view(outputs.size(0), -1, outputs.size(-1))  # Reshape outputs
-                    outputs = outputs.mean(dim=1)  # Take the mean across sequence dimension
-                    loss = criterion(outputs, labels)  # Compute the loss
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+    
 
                 # Backpropagate with scaled gradients and optimize
                 scaler.scale(loss).backward()
@@ -228,8 +229,6 @@ if __name__ == "__main__":
                     inputs, labels = inputs.to(device), labels.to(device)
                     with autocast(device_type='cuda', dtype=torch.float16):
                         outputs = model(inputs)
-                        outputs = outputs.view(outputs.size(0), -1, outputs.size(-1))
-                        outputs = outputs.mean(dim=1)
                         loss = criterion(outputs, labels)
                     val_loss += loss.item()
                     _, predicted = torch.max(outputs, 1)
@@ -255,4 +254,8 @@ if __name__ == "__main__":
 
 
     # Notify the user that the model has been saved successfully
+    total_time = time.time() - start_time
+    with open(log_file, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow('Time', total_time)
     print("Model saved successfully!")

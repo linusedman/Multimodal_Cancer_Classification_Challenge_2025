@@ -1,3 +1,6 @@
+model = https://huggingface.co/microsoft/swin-large-patch4-window12-384
+params -	200M
+
 Data Loader created to split the datset into
     - Cancerous (class 0)
     - Clean (class 1)
@@ -6,4 +9,10 @@ Edit the SWIN transformer to output 2 classes, freeze all weights except final l
 
 Submission 1,2, - classes flipped horrible score of 0.3
 Submission 3 - classes correct inital model trained on FL images, score 0.6 (20 epcoh)
-Submission 4 - SWIN now trained on BF images score --- (20 epoch)
+NOTE: train/val/test split - [0.75,0.15,0.1]
+Submission 4 - SWIN now trained on BF images score --- (13 epoch) - first place score 0.71
+NOTE: train/val/test - [0.9, 0.1] => longer training times, but better results...
+Submission 5 - SWIN BF full 20 epochs, rougly 20 hours training on 2080
+Submission 6 onwrads - train a MLP to concatenate the predictions of both pretrained BF and FL models?
+
+If time - Modify SWIN to take 6 channel input train for 20 epoch, will require unfreezing of weights possibly eek
