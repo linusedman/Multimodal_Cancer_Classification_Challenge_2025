@@ -58,7 +58,7 @@ model.load_state_dict(ckpt['model_state_dict'])
 model.eval()
 
 # 3) Inference + softmax
-dataset = FlatImageDataset('/srv/scratch1/swallace/CancerSeg/data/FL/test',
+dataset = FlatImageDataset('/srv/scratch1/swallace/CancerSeg/data/BF/test',
                            transform=test_transform)
 loader  = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
 
@@ -92,5 +92,5 @@ with torch.no_grad():
 # 4) Build DF, ensure correct order & save
 df = pd.DataFrame(results)
 assert len(df)==59040, f"Expected 59040 rows but got {len(df)}"
-df.to_csv('submission.csv', index=False)
+df.to_csv('Epoch12_BF.csv', index=False)
 print("Saved submission.csv with", len(df), "rows")

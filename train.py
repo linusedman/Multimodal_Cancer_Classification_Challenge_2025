@@ -13,7 +13,19 @@ import timm
 import csv
 from tqdm import tqdm
 
-device = "cuda:0"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.backends.cudnn.benchmark = True
+
+class TransformWrapper(torch.utils.data.Dataset):
+        def __init__(self, dataset, transform):
+            self.dataset = dataset
+            self.transform = transform
+        def __getitem__(self, index):
+            img, label = self.dataset[index]
+            img = self.transform(img)
+            return img, label
+        def __len__(self):
+            return len(self.dataset)
 
 class SwinTransformerModel(nn.Module):
     def __init__(self, num_classes):
@@ -67,7 +79,11 @@ def load_checkpoint(model, optimizer, checkpoint_path):
         print(f"Loading checkpoint from {checkpoint_path}")
         
         checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        state_dict = checkpoint['model_state_dict']
+        if isinstance(model, nn.DataParallel):
+            model.module.load_state_dict(state_dict)
+        else:
+            model.load_state_dict(state_dict)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         epoch = checkpoint(['epoch'])
         
@@ -88,22 +104,49 @@ if __name__ == "__main__":
     # Set the start method for multiprocessing to 'spawn' to avoid potential issues in certain environments
     mp.set_start_method('spawn', force=True)
 
-    # Load dataset and split into train, val, and test sets using random_split
-    full_dataset = datasets.ImageFolder('data/FL_dataset', transform=train_transform, loader=custom_loader)
-    train_size = int(0.7 * len(full_dataset))
-    val_size = int(0.15 * len(full_dataset))
-    test_size = len(full_dataset) - train_size - val_size
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size, test_size])
+    # Load dataset and split into train and val sets
+    data_set_path = 'data/BF_dataset'
+    print(f"Using dataset {data_set_path}")
+    full_dataset = datasets.ImageFolder(data_set_path, loader=custom_loader)
 
-    # Create data loaders for training and testing, using batch size of 16, shuffle training data, and use 1 worker for loading
+    train_size = int(0.9 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_subset, val_subset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+
+    train_dataset = TransformWrapper(train_subset, train_transform)
+    val_dataset   = TransformWrapper(val_subset, test_transform)
+
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=1, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
+    val_loader   = DataLoader(val_dataset,   batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
 
     # Initialize the model, loss function, and optimizer
     num_classes = 2 # Number of output classes based on dataset
     print(f"We have {num_classes} classes")
     model = SwinTransformerModel(num_classes).to(device)  # Initialize the Swin Transformer model
+    
+    if torch.cuda.device_count() > 1:
+        print(f"✅ Using {torch.cuda.device_count()} GPUs via DataParallel")
+        model = nn.DataParallel(model)
+        
+    model = model.to(device)
+    
+    # Some info
+    net = model.module if isinstance(model, nn.DataParallel) else model
+
+    total_params = 0
+    trainable_params = 0
+    print("=== Parameter status (requires_grad) ===")
+    for name, param in net.named_parameters():
+        num = param.numel()
+        total_params += num
+        if param.requires_grad:
+            trainable_params += num
+        print(f"{name:60s} : requires_grad={param.requires_grad:5} ({num} params)")
+    print("========================================")
+    print(f"Total parameters        : {total_params}")
+    print(f"Trainable parameters    : {trainable_params}")
+    print(f"Frozen parameters       : {total_params - trainable_params}")
+    print("========================================")
 
     # Set up Adam optimizer for model parameters with learning rate of 0.0001
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.0001)
@@ -181,7 +224,7 @@ if __name__ == "__main__":
             val_correct = 0
             val_total = 0
             with torch.no_grad():
-                for inputs, labels in val_loader:
+                for inputs, labels in tqdm(val_loader, desc="Validating"):
                     inputs, labels = inputs.to(device), labels.to(device)
                     with autocast(device_type='cuda', dtype=torch.float16):
                         outputs = model(inputs)
@@ -206,32 +249,10 @@ if __name__ == "__main__":
             # Save the model checkpoint at the end of each epoch
             torch.save({
                 'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, checkpoint_path)
 
-    # Switch the model to evaluation mode for testing
-    model.eval()
-
-    # Initialize variables for calculating test accuracy
-    correct = 0
-    total = 0
-
-    # Disable gradient calculation during testing for efficiency
-    with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc="Evaluating"):
-            inputs, labels = inputs.to(device), labels.to(device)  # Move data to device (GPU or CPU)
-            with autocast(device_type='cuda', dtype=torch.float16):
-                outputs = model(inputs)  # Forward pass through the model
-                outputs = outputs.view(outputs.size(0), -1, outputs.size(-1))  # Reshape outputs
-                outputs = outputs.mean(dim=1)  # Take the mean across sequence dimension
-            _, predicted = torch.max(outputs, 1)  # Get predicted class
-            total += labels.size(0)  # Total number of samples
-            correct += (predicted == labels).sum().item()  # Count correct predictions
-
-    # Calculate and print the test accuracy
-    test_acc = 100 * correct / total
-    print(f"Test accuracy: {test_acc:.2f}%")
 
     # Notify the user that the model has been saved successfully
     print("Model saved successfully!")

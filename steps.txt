@@ -1,0 +1,9 @@
+Data Loader created to split the datset into
+    - Cancerous (class 0)
+    - Clean (class 1)
+
+Edit the SWIN transformer to output 2 classes, freeze all weights except final layer
+
+Submission 1,2, - classes flipped horrible score of 0.3
+Submission 3 - classes correct inital model trained on FL images, score 0.6 (20 epcoh)
+Submission 4 - SWIN now trained on BF images score --- (20 epoch)

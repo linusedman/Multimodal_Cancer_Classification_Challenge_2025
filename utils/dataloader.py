@@ -3,7 +3,7 @@ import shutil
 import pandas as pd
 
 df = pd.read_csv("/srv/scratch1/swallace/CancerSeg/data/train.csv")
-label_dirs = "/srv/scratch1/swallace/CancerSeg/data/cancerous"
+label_dirs = "/srv/scratch1/swallace/CancerSeg/data/BF_dataset"
 
 if not os.path.exists(label_dirs):
     os.makedirs(label_dirs)
@@ -18,7 +18,7 @@ for _, row in df.iterrows():
     if not os.path.exists(label_dir):
         os.makedirs(label_dir)
     
-    src_path = os.path.join('/srv/scratch1/swallace/CancerSeg/data/FL/train', image_name)
+    src_path = os.path.join('/srv/scratch1/swallace/CancerSeg/data/BF/train', image_name)
     dest_path = os.path.join(label_dir, image_name)
     
     if os.path.exists(src_path):
