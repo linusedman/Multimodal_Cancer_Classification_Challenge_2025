@@ -6,36 +6,38 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torch import cuda
-from torch.amp import autocast, GradScalar
+from torch.amp import autocast, GradScaler
 import torch.multiprocessing as mp
 import concurrent.futures
-import timn
+import timm
+import csv
+from tqdm import tqdm
 
 device = "cuda:0"
 
 class SwinTransformerModel(nn.Module):
     def __init__(self, num_classes):
-        super(SwinTransformerMode, self).__init__()
-        self.model = timn.create_model('swin_large_patch4_window12_384', pretrained=True)
+        super(SwinTransformerModel, self).__init__()
+        self.model = timm.create_model('swin_large_patch4_window12_384', pretrained=True)
         in_features = self.model.head.in_features
-        self.model.head(nn.Linear(in_features, num_classes))
+        self.model.head = nn.Linear(in_features, num_classes)
         
         # Freezing of all layers except final        
         for param in self.model.parameters():
             param.requires_grad = False
         
         for param in self.model.head.parameters():
-            para.requires_grad = True
+            param.requires_grad = True
         
-        def forward(self, x):
-            return self.model(x)
+    def forward(self, x):
+        return self.model(x)
     
 def custom_loader(path):
-    
+    # Open the image
     img = Image.open(path)
-    
+    # Ensure the image is in RGB mode even if RGBA
     img = img.convert('RGBA')
-    return img.convert('RBG')
+    return img.convert('RGB')
 
 
 train_transform = transforms.Compose([
@@ -56,7 +58,7 @@ test_transform = transforms.Compose([
 ])
 
 device = torch.device(device)
-print(f"Using device: {device}")
+
 torch.backends.cudnn.benchmark = True
 
 def load_checkpoint(model, optimizer, checkpoint_path):
@@ -78,19 +80,28 @@ def load_checkpoint(model, optimizer, checkpoint_path):
 # Main training script
 if __name__ == "__main__":
     
+    log_file = "training_log.csv"
+    with open(log_file, mode = "w", newline = '')as f:
+        writer = csv.writer(f)
+        writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc'])
+    
     # Set the start method for multiprocessing to 'spawn' to avoid potential issues in certain environments
     mp.set_start_method('spawn', force=True)
 
-    # Load training and test datasets using ImageFolder and custom transformations and loader
-    train_dataset = datasets.ImageFolder('data/FL_dataset', transform=train_transform, loader=custom_loader)
-    test_dataset = datasets.ImageFolder('data/FL_dataset', transform=test_transform, loader=custom_loader)
+    # Load dataset and split into train, val, and test sets using random_split
+    full_dataset = datasets.ImageFolder('data/FL_dataset', transform=train_transform, loader=custom_loader)
+    train_size = int(0.7 * len(full_dataset))
+    val_size = int(0.15 * len(full_dataset))
+    test_size = len(full_dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size, test_size])
 
     # Create data loaders for training and testing, using batch size of 16, shuffle training data, and use 1 worker for loading
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=1, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
 
     # Initialize the model, loss function, and optimizer
-    num_classes = len(train_dataset.classes)  # Number of output classes based on dataset
+    num_classes = 2 # Number of output classes based on dataset
     print(f"We have {num_classes} classes")
     model = SwinTransformerModel(num_classes).to(device)  # Initialize the Swin Transformer model
 
@@ -111,7 +122,7 @@ if __name__ == "__main__":
     model, optimizer, start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
 
     # Set number of epochs to train for
-    epochs = 5
+    epochs = 20
 
     # Start training loop with ThreadPoolExecutor to parallelize certain tasks
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -126,7 +137,7 @@ if __name__ == "__main__":
             total = 0
 
             # Iterate over batches in the training data
-            for i, (inputs, labels) in enumerate(train_loader, 1):
+            for i, (inputs, labels) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}"), 1):
                 inputs, labels = inputs.to(device), labels.to(device)  # Move data to device (GPU or CPU)
 
                 # Zero out gradients from previous step
@@ -157,12 +168,37 @@ if __name__ == "__main__":
                 if i % 10 == 0:
                     batch_loss = running_loss / i
                     batch_acc = 100 * correct / total
-                    print(f"Epoch [{epoch+1}/{epochs}], Batch [{i}/{len(train_loader)}], Loss: {batch_loss:.4f}, Accuracy: {batch_acc:.2f}%")
+    
 
             # Compute and print the epoch loss and accuracy after each epoch
             epoch_loss = running_loss / len(train_loader)
             epoch_acc = 100 * correct / total
             print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%")
+
+            # Validation phase
+            model.eval()
+            val_loss = 0.0
+            val_correct = 0
+            val_total = 0
+            with torch.no_grad():
+                for inputs, labels in val_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    with autocast(device_type='cuda', dtype=torch.float16):
+                        outputs = model(inputs)
+                        outputs = outputs.view(outputs.size(0), -1, outputs.size(-1))
+                        outputs = outputs.mean(dim=1)
+                        loss = criterion(outputs, labels)
+                    val_loss += loss.item()
+                    _, predicted = torch.max(outputs, 1)
+                    val_total += labels.size(0)
+                    val_correct += (predicted == labels).sum().item()
+            val_loss /= len(val_loader)
+            val_acc = 100 * val_correct / val_total
+            print(f"Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_acc:.2f}%")
+
+            with open(log_file, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([epoch + 1, epoch_loss, epoch_acc, val_loss, val_acc])
 
             # Update learning rate according to the scheduler
             scheduler.step()
@@ -183,7 +219,7 @@ if __name__ == "__main__":
 
     # Disable gradient calculation during testing for efficiency
     with torch.no_grad():
-        for inputs, labels in test_loader:
+        for inputs, labels in tqdm(test_loader, desc="Evaluating"):
             inputs, labels = inputs.to(device), labels.to(device)  # Move data to device (GPU or CPU)
             with autocast(device_type='cuda', dtype=torch.float16):
                 outputs = model(inputs)  # Forward pass through the model
