@@ -2,9 +2,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-path = '/srv/scratch1/swallace/CancerSeg/training_log.csv'
+path = '/srv/scratch1/swallace/CancerSeg/SWINv2_BF_log.csv'
 
-df = pd.read_csv('/srv/scratch1/swallace/CancerSeg/training_log.csv')
+df = pd.read_csv(path)
 
 print(df.head())
 

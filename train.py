@@ -86,7 +86,7 @@ def load_checkpoint(model, optimizer, checkpoint_path):
         else:
             model.load_state_dict(state_dict)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        epoch = checkpoint(['epoch'])
+        epoch = checkpoint['epoch']
         
         return model, optimizer, epoch
     else:

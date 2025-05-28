@@ -7,11 +7,12 @@ from torch.amp import autocast
 from torchvision.datasets.folder import default_loader
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 from PIL import Image
 import timm
 from tqdm import tqdm
 
-device = torch.device("cuda:0")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.backends.cudnn.benchmark = True
 
 # 1) Prepare transforms & loader
@@ -42,17 +43,28 @@ class FlatImageDataset(Dataset):
         return img, os.path.basename(img_path)
 
 # 2) Load model
-class SwinTransformerModel(nn.Module):
-    def __init__(self,num_classes):
-        super().__init__()
-        self.model = timm.create_model('swin_large_patch4_window12_384', pretrained=True)
-        in_f = self.model.head.in_features
-        self.model.head = nn.Linear(in_f, num_classes)
-    def forward(self,x):
-        return self.model(x)
+class SwinV2Model(nn.Module):
+    def __init__(self, num_classes):
+        super(SwinV2Model, self).__init__()
+        self.processor = AutoImageProcessor.from_pretrained("microsoft/swinv2-tiny-patch4-window16-256")
+        self.model = AutoModelForImageClassification.from_pretrained(
+            "microsoft/swinv2-tiny-patch4-window16-256",
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True  # Needed if changing head size
+        )
+        for name, param in self.model.named_parameters():
+            if "classifier" not in name:
+                param.requires_grad = False
+
+    def forward(self, x):
+        # x is a batch of images in [B, C, H, W]
+        # Convert to expected input format
+        inputs = self.processor(images=[transforms.ToPILImage()(img.cpu()) for img in x], return_tensors="pt", padding=True)
+        inputs = {k: v.to(x.device) for k, v in inputs.items()}
+        return self.model(**inputs).logits
 
 num_classes = 2
-model = SwinTransformerModel(num_classes).to(device)
+model = SwinV2Model(num_classes).to(device)
 ckpt = torch.load('checkpoints/swin_large_patch4_window12_384_finetuned_model.pth')
 model.load_state_dict(ckpt['model_state_dict'])
 model.eval()
@@ -69,15 +81,11 @@ with torch.no_grad():
     for imgs, fnames in tqdm(loader, desc="Running inference", unit="batch"):
         imgs = imgs.to(device)
         with autocast(device_type='cuda', dtype=torch.float16):
-            raw_logits = model(imgs)                     # [B, 12, 12, 2]
-            raw_logits_flat = raw_logits.view(imgs.size(0), -1, raw_logits.size(-1))  # [B, 144, 2]
-            logits = raw_logits_flat.mean(dim=1)         # [B, 2]
-            probs = F.softmax(logits, dim=1)             # [B, 2]
+            raw_logits = model(imgs)                     # [B, 2]
+            probs = F.softmax(raw_logits, dim=1)             # [B, 2]
 
             if counter == 0:
-                print(f"Raw logits shape           : {raw_logits.shape}")
-                print(f"After flattening            : {raw_logits_flat.shape}")
-                print(f"After mean-pooling (logits) : {logits.shape}")
+                print(f"Raw logits shape           : {raw_logits.shape}") 
                 print(f"Softmax output (probs)      : {probs.shape}")
                 counter += 1
 
