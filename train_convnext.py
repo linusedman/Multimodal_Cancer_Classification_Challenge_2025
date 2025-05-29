@@ -20,6 +20,7 @@ torch.backends.cudnn.benchmark = True
 class ConvNeXtModel(nn.Module):
     def __init__(self, num_classes):
         super(ConvNeXtModel, self).__init__()
+        #Different model types to choose between: convnext_tiny, convnext_small, convnext_base, convnext_large
         self.model = timm.create_model('convnext_tiny', pretrained=True, num_classes=num_classes)
         
         #Freezing of all layers except final
