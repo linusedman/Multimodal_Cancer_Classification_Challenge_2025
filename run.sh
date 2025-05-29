@@ -6,7 +6,7 @@ if [ -z "$1" ]; then
 fi
 
 SCRIPT="$1"
-MAX_GPUS=2         # Maximum number of GPUs you're willing to use
+MAX_GPUS=1        # Maximum number of GPUs you're willing to use
 MEM_THRESHOLD=10000  # Minimum free memory in MiB
 
 while true; do

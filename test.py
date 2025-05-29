@@ -19,10 +19,6 @@ torch.backends.cudnn.benchmark = True
 test_transform = transforms.Compose([
     transforms.Resize((384,384)),
     transforms.ToTensor(),
-    transforms.Normalize(
-      mean=[0.485,0.456,0.406],
-      std =[0.229,0.224,0.225]
-    )
 ])
 class FlatImageDataset(Dataset):
     def __init__(self, folder_path, transform=None):
@@ -52,9 +48,6 @@ class SwinV2Model(nn.Module):
             num_labels=num_classes,
             ignore_mismatched_sizes=True  # Needed if changing head size
         )
-        for name, param in self.model.named_parameters():
-            if "classifier" not in name:
-                param.requires_grad = False
 
     def forward(self, x):
         # x is a batch of images in [B, C, H, W]
@@ -66,7 +59,7 @@ class SwinV2Model(nn.Module):
 num_classes = 2
 model = SwinV2Model(num_classes).to(device)
 ckpt = torch.load('checkpoints/swin_large_patch4_window12_384_finetuned_model.pth')
-model.load_state_dict(ckpt['model_state_dict'])
+model.model.load_state_dict(ckpt['model_state_dict'])
 model.eval()
 
 # 3) Inference + softmax

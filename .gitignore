@@ -4,4 +4,4 @@ Broken
 checkpoints/*
 scrap.py
 utils/idiot.py
-
+best_fusion_model.pth

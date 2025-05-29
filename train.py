@@ -15,7 +15,6 @@ import timm
 import csv
 from tqdm import tqdm
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.backends.cudnn.benchmark = True
 
 class TransformWrapper(torch.utils.data.Dataset):
@@ -110,7 +109,7 @@ if __name__ == "__main__":
     print(f"Using dataset {data_set_path}")
     full_dataset = datasets.ImageFolder(data_set_path, loader=custom_loader)
 
-    train_size = int(0.9 * len(full_dataset))
+    train_size = int(0.001 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_subset, val_subset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
 
@@ -162,7 +161,7 @@ if __name__ == "__main__":
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Load model checkpoint if available to resume training from the saved state
-    checkpoint_path = 'checkpoints/swin_large_patch4_window12_384_finetuned_model.pth'
+    checkpoint_path = 'checkpoints/swinV2.pth'
     model, optimizer, start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
 
     # Set number of epochs to train for
