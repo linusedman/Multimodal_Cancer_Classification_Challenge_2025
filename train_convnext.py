@@ -21,6 +21,7 @@ class ConvNeXtModel(nn.Module):
     def __init__(self, num_classes):
         super(ConvNeXtModel, self).__init__()
         self.model = timm.create_model('convnext_tiny', pretrained=True, num_classes=num_classes)
+        
         #Freezing of all layers except final
         for param in self.model.parameters():
             param.requires_grad = False
@@ -58,13 +59,13 @@ if __name__ == "__main__":
         fl_dir='data/FL/train',
         csv_file='data/train.csv',
         transform=None,
-        mode='fl'
+        mode='fl' #Change between FL and BF
     )
 
     #Randomly select x number of images - else just choose full_dataset to perform on all images
     random.seed(42)
     subset_indices = random.sample(range(len(full_dataset)), 100)
-    base_dataset = Subset(full_dataset, subset_indices)
+    base_dataset = Subset(full_dataset, subset_indices) #Change to full_dataset to train whole dataset
     base_dataset.dataset.transform = train_transform
 
     #Train/test-split
@@ -84,7 +85,7 @@ if __name__ == "__main__":
     #Weighted sampling
     targets = [base_dataset[i][1] for i in train_indices]
     class_counts = np.bincount(targets, minlength=max(targets)+1)
-    class_weights = 1. / np.where(class_counts == 0, 1, class_counts)  # Undvik division med 0
+    class_weights = 1. / np.where(class_counts == 0, 1, class_counts)  
     sample_weights = [class_weights[label] for label in targets]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
