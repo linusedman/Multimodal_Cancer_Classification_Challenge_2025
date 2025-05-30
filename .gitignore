@@ -1,4 +1,9 @@
 data/
+utils/idiot.py
 data.zip
 Broken
+checkpoints/
+logs/
+best_fusion_model.pth
+
 
