@@ -15,6 +15,7 @@ import timm
 from load_data import MultiModalCellDataset  
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from collections import defaultdict
 
 #GPU else CPU
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -74,48 +75,89 @@ if __name__ == "__main__":
         mode='BF' #Change between FL and BF
     )
 
-    #Randomly select x number of images - else just choose full_dataset to perform on all images
-    random.seed(42)
-    subset_indices = random.sample(range(len(full_dataset)), 100)
-    base_dataset = full_dataset
-    base_dataset.transform = train_transform
+    #Map patient ID to image indices
+    patient_to_indices = defaultdict(list)
+    patient_to_label = {}
 
-    #Train/test-split
-    indices = list(range(len(base_dataset)))
-    random.seed(42)
-    random.shuffle(indices)
-    train_indices = indices
+    for idx, filename in enumerate(full_dataset.filenames):
+        label = full_dataset.labels[idx]  
+        patient_id = filename.split('_')[1] 
 
-    # Validation split from training data (90% train / 10% val)
-    val_split = int(0.9 * len(train_indices))
-    final_train_indices = train_indices[:val_split]
-    val_indices = train_indices[val_split:]
+        patient_to_indices[patient_id].append(idx)
+        patient_to_label[patient_id] = label
 
-    final_train_dataset = Subset(base_dataset, final_train_indices)
-    val_dataset = Subset(base_dataset, val_indices)
+    healthy_patients = [pid for pid, label in patient_to_label.items() if label == 0]
+    sick_patients = [pid for pid, label in patient_to_label.items() if label == 1]
 
-    final_train_dataset.dataset.transform = train_transform
-    val_dataset.dataset.transform = test_transform
+    #Hardcode one healthy and one sick into validation set
+    val_patients = [healthy_patients[0], sick_patients[0]]
+
+    #All others into training set
+    train_patients = [pid for pid in patient_to_indices if pid not in val_patients]
+
+    train_indices = [i for pid in train_patients for i in patient_to_indices[pid]]
+    val_indices = [i for pid in val_patients for i in patient_to_indices[pid]]
+
+    #Separate dataset instances with separate transforms
+    train_dataset_full = MultiModalCellDataset(
+        bf_dir='data/BF/train',
+        fl_dir='data/FL/train',
+        csv_file='data/train.csv',
+        transform=train_transform,
+        mode='BF'
+    )
+    val_dataset_full = MultiModalCellDataset(
+        bf_dir='data/BF/train',
+        fl_dir='data/FL/train',
+        csv_file='data/train.csv',
+        transform=test_transform,
+        mode='BF'
+    )
+
+    train_dataset = Subset(train_dataset_full, train_indices)
+    val_dataset = Subset(val_dataset_full, val_indices)
+
+    # #Randomly select x number of images - else just choose full_dataset to perform on all images
+    # random.seed(42)
+    # subset_indices = random.sample(range(len(full_dataset)), 100)
+    # base_dataset = full_dataset
+    # base_dataset.transform = train_transform
+
+    # #Train/test-split
+    # indices = list(range(len(base_dataset)))
+    # random.seed(42)
+    # random.shuffle(indices)
+    # train_indices = indices
+
+    # # Validation split from training data (90% train / 10% val)
+    # val_split = int(0.9 * len(train_indices))
+    # final_train_indices = train_indices[:val_split]
+    # val_indices = train_indices[val_split:]
+
+    # final_train_dataset = Subset(base_dataset, final_train_indices)
+    # val_dataset = Subset(base_dataset, val_indices)
+
+    # final_train_dataset.dataset.transform = train_transform
+    # val_dataset.dataset.transform = test_transform
 
     #Different transform for test/train
     # train_dataset.dataset.transform = train_transform
     # test_dataset.dataset.transform = test_transform
 
     #Weighted sampling
-    targets = [base_dataset[i][1] for i in final_train_indices]
+    targets = [train_dataset_full.labels[i] for i in train_indices]
     class_counts = np.bincount(targets, minlength=max(targets)+1)
     class_weights = 1. / np.where(class_counts == 0, 1, class_counts)  
     sample_weights = [class_weights[label] for label in targets]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
-    train_loader = DataLoader(final_train_dataset, batch_size=4, sampler=WeightedRandomSampler(
-        [class_weights[base_dataset[i][1]] for i in final_train_indices],
-        num_samples=len(final_train_indices),
-        replacement=True
-    ), num_workers=1, pin_memory=True)
-
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=1, pin_memory=True)
-
+    # train_loader = DataLoader(train_dataset, batch_size=4, sampler=WeightedRandomSampler(
+    #     [class_weights[train_dataset_full[i][1]] for i in train_indices],
+    #     num_samples=len(train_indices),
+    #     replacement=True
+    # ), num_workers=1, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, sampler=sampler, num_workers=1, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=1, pin_memory=True)
 
     #Model
     num_classes = len(set(targets)) 
