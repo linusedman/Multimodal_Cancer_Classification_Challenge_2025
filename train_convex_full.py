@@ -14,6 +14,7 @@ from torchvision import transforms
 import timm
 from load_data import MultiModalCellDataset  
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 #GPU else CPU
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -60,6 +61,7 @@ if __name__ == "__main__":
     metrics_file = open("metrics_full.csv", mode="w", newline="")
     metrics_writer = csv.writer(metrics_file)
     metrics_writer.writerow(["epoch", "loss", "accuracy", "learning_rate"])
+    writer = SummaryWriter(log_dir="runs/convnext_full_train")
 
     mp.set_start_method('spawn', force=True)
     print(f"Using device: {device}")
@@ -82,25 +84,38 @@ if __name__ == "__main__":
     indices = list(range(len(base_dataset)))
     random.seed(42)
     random.shuffle(indices)
-    split = int(0.8 * len(indices))
-    train_indices, test_indices = indices[:split], indices[split:]
+    train_indices = indices
 
-    train_dataset = Subset(base_dataset, train_indices)
-    test_dataset = Subset(base_dataset, test_indices)
+    # Validation split from training data (90% train / 10% val)
+    val_split = int(0.9 * len(train_indices))
+    final_train_indices = train_indices[:val_split]
+    val_indices = train_indices[val_split:]
+
+    final_train_dataset = Subset(base_dataset, final_train_indices)
+    val_dataset = Subset(base_dataset, val_indices)
+
+    final_train_dataset.dataset.transform = train_transform
+    val_dataset.dataset.transform = test_transform
 
     #Different transform for test/train
-    train_dataset.dataset.transform = train_transform
-    test_dataset.dataset.transform = test_transform
+    # train_dataset.dataset.transform = train_transform
+    # test_dataset.dataset.transform = test_transform
 
     #Weighted sampling
-    targets = [base_dataset[i][1] for i in train_indices]
+    targets = [base_dataset[i][1] for i in final_train_indices]
     class_counts = np.bincount(targets, minlength=max(targets)+1)
     class_weights = 1. / np.where(class_counts == 0, 1, class_counts)  
     sample_weights = [class_weights[label] for label in targets]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
-    train_loader = DataLoader(train_dataset, batch_size=4, sampler=sampler, num_workers=1, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=1, pin_memory=True)
+    train_loader = DataLoader(final_train_dataset, batch_size=4, sampler=WeightedRandomSampler(
+        [class_weights[base_dataset[i][1]] for i in final_train_indices],
+        num_samples=len(final_train_indices),
+        replacement=True
+    ), num_workers=1, pin_memory=True)
+
+    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=1, pin_memory=True)
+
 
     #Model
     num_classes = len(set(targets)) 
@@ -149,11 +164,34 @@ if __name__ == "__main__":
         current_lr = scheduler.get_last_lr()[0]
         print(f"Learning Rate after epoch {epoch+1}: {current_lr:.6f}")
 
+        # Validation
+        model.eval()
+        val_correct, val_total, val_running_loss = 0, 0, 0.0
+        with torch.no_grad():
+            for val_inputs, val_labels in tqdm(val_loader, desc=f"Validating Epoch {epoch+1}", leave=False):
+                val_inputs, val_labels = val_inputs.to(device), val_labels.to(device)
+                with autocast(device_type=device.type, enabled=torch.cuda.is_available()):
+                    val_outputs = model(val_inputs)
+                    val_loss = criterion(val_outputs, val_labels)
+                _, val_predicted = torch.max(val_outputs, 1)
+                val_total += val_labels.size(0)
+                val_correct += (val_predicted == val_labels).sum().item()
+                val_running_loss += val_loss.item()
+
+        val_epoch_loss = val_running_loss / len(val_loader)
+        val_epoch_acc = 100 * val_correct / val_total
+        print(f"Validation - Loss: {val_epoch_loss:.4f}, Accuracy: {val_epoch_acc:.2f}%")
+        writer.add_scalar("Loss/train", epoch_loss, epoch)
+        writer.add_scalar("Accuracy/train", epoch_acc, epoch)
+        writer.add_scalar("LearningRate", current_lr, epoch)
+        writer.add_scalar("Loss/val", val_epoch_loss, epoch)
+        writer.add_scalar("Accuracy/val", val_epoch_acc, epoch)
+
         metrics_writer.writerow([epoch + 1, epoch_loss, epoch_acc, current_lr])
 
         # Early stopping logic
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        if val_epoch_loss < best_loss:
+            best_loss = val_epoch_loss
             counter = 0
         else:
             counter += 1
@@ -169,23 +207,4 @@ if __name__ == "__main__":
         }, checkpoint_path)
 
     metrics_file.close()
-
-    #Evaluation
-    model.eval()
-    correct, total, running_loss = 0, 0, 0.0
-    with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc="Evaluating", leave=False):
-            inputs, labels = inputs.to(device), labels.to(device)
-            with autocast(device_type=device.type, enabled=torch.cuda.is_available()):
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            running_loss += loss.item()
-
-    test_acc = 100 * correct / total
-    avg_test_loss = running_loss / len(test_loader)
-    print(f"\nFinal Test Accuracy: {test_acc:.2f}%")
-    print(f"Average Test Loss: {avg_test_loss:.4f}")
-    print("Model saved successfully.")
+    writer.close()

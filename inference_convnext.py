@@ -70,7 +70,7 @@ inference_loader = torch.utils.data.DataLoader(
 # --- Load trained model checkpoint ---
 num_classes = 2
 model = ConvNeXtModel(num_classes).to(device)
-checkpoint = torch.load('checkpoints/convnext_model_full_train.pth')
+checkpoint = torch.load('/srv/scratch1/swallace/CancerSeg/checkpoints/convnext_model_full_train_stage_3.pth')
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
